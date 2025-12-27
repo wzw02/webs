@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # 这个文件作为模板，实际部署时会生成特定颜色的版本
+  app_blue:
+    image: ${BLUE_TAG:-ghcr.io/wkk08/web-calculator-ci-cd:latest}
+    container_name: web-calculator-blue
+    restart: unless-stopped
+    ports:
+      - "8080:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  app_green:
+    image: ${GREEN_TAG:-ghcr.io/wkk08/web-calculator-ci-cd:latest}
+    container_name: web-calculator-green
+    restart: unless-stopped
+    ports:
+      - "8081:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - app_blue
+      - app_green
+    restart: always

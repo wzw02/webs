@@ -1,0 +1,296 @@
+name: CI/CD Pipeline for Web Calculator
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: wkk08/web-calculator-ci-cd
+
+jobs:
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/unit/ -v --cov=app --cov-report=xml
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  functional-test:
+    name: Functional Tests
+    runs-on: ubuntu-latest
+    needs: unit-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run functional tests
+        run: |
+          python app.py &
+          APP_PID=$!
+          sleep 5
+          echo "测试健康检查..."
+          curl -f "http://localhost:5000/health" || (echo "健康检查失败"; exit 1)
+          echo "测试加法..."
+          curl -f "http://localhost:5000/add/2&3" || (echo "加法测试失败"; exit 1)
+          echo "测试乘法..."
+          curl -f "http://localhost:5000/multiply/4&5" || (echo "乘法测试失败"; exit 1)
+          echo "测试无效输入..."
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:5000/add/abc&xyz")
+          if [ "$STATUS_CODE" -ne 400 ]; then
+            echo "无效输入测试失败，期望400，得到$STATUS_CODE"
+            exit 1
+          fi
+          echo "所有功能测试通过！"
+          kill $APP_PID 2>/dev/null || true
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: [unit-test, functional-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.set-image-tag.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Build Docker image locally
+        run: |
+          docker build -t web-calculator:${{ github.sha }} -t web-calculator:latest .
+          echo "✅ 本地镜像构建成功"
+      - name: Log in to GHCR with PAT
+        run: |
+          echo "${{ secrets.GHCR_PAT }}" | docker login ${{ env.REGISTRY }} -u wkk08 --password-stdin
+      - name: Tag and Push to GHCR
+        run: |
+          docker tag web-calculator:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker tag web-calculator:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          echo "开始推送镜像到 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} ..."
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          echo "✅ 镜像推送成功！"
+          echo "DEPLOY_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_ENV
+
+      - name: Set image tag output
+        id: set-image-tag
+        run: |
+          echo "IMAGE_TAG=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+  deploy:
+    name: Blue-Green Deployment
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # 从 build-and-push 作业获取输出
+    env:
+      DEPLOY_IMAGE: ${{ needs.build-and-push.outputs.image-tag }}
+
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key and Debug Connection
+        run: |
+          # 1. 创建 .ssh 目录并设置权限
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # 2. 将私钥写入文件 (关键: 检查格式，必须包含完整的BEGIN/END行)
+          echo "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # 3. 将服务器主机指纹加入已知主机列表
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+          
+          # 4. 关键: 打印文件状态用于调试
+          echo "=== SSH 调试信息 ==="
+          echo "私钥文件前3行:"
+          head -3 ~/.ssh/deploy_key
+          echo "私钥文件权限:"
+          ls -la ~/.ssh/deploy_key
+          echo "known_hosts 内容:"
+          cat ~/.ssh/known_hosts
+          echo "===================="
+
+      # >>>>> 核心新增步骤：详细的SSH连接调试 <<<<<
+      - name: Debug SSH Connection (Verbose)
+        run: |
+          echo "🧪 开始执行详细SSH连接调试..."
+          # 使用 -vvv 参数输出最详细日志，并用 tee 同时输出到屏幕和文件以便完整查看
+          ssh -vvv \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_SERVER_IP }} \
+              "echo '远程命令执行成功: OK from $(hostname)'" 2>&1 | tee /tmp/ssh_debug.log
+          
+          # 捕获上一条命令的退出状态码
+          SSH_EXIT_CODE=${PIPESTATUS[0]}
+          echo "ssh exit code=$SSH_EXIT_CODE"
+          
+          # 根据退出码给出明确的失败原因提示
+          if [ $SSH_EXIT_CODE -ne 0 ]; then
+            echo "❌ SSH 连接测试失败！"
+            echo "请查看上方详细的 -vvv 日志。常见原因："
+            echo "1. 'Permission denied' -> GitHub Secrets 中的私钥或服务器上的公钥/授权文件有问题"
+            echo "2. 'Connection timed out' -> 网络/防火墙/端口问题，IP地址或端口(${{ secrets.DEPLOY_PORT || '22' }})错误"
+            echo "3. 'Could not resolve hostname' -> DEPLOY_SERVER_IP 配置错误"
+            echo "4. 'invalid format' / 'Load key' 错误 -> DEPLOY_SSH_PRIVATE_KEY 格式损坏（注意换行）"
+            echo "5. 其他错误请根据 -vvv 输出判断"
+            # 故意失败，停止后续部署
+            exit 1
+          else
+            echo "✅ SSH 连接调试通过！"
+          fi
+
+      - name: Copy deployment files to server
+        run: |
+          echo "开始同步部署文件到服务器..."
+          # 使用调试成功的配置进行文件同步
+          scp -i ~/.ssh/deploy_key -o ConnectTimeout=10 -r deploy/* ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_SERVER_IP }}:${{ secrets.DEPLOY_DIR }}/
+
+      - name: Execute blue-green deployment
+        run: |
+          echo "开始在远程服务器执行部署..."
+          
+          # 构造镜像标签（使用环境变量或直接构造）
+          IMAGE_TAG="${{ env.DEPLOY_IMAGE }}"
+          echo "使用的镜像标签: $IMAGE_TAG"
+          
+          ssh -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_SERVER_IP }} "
+            # ==== 核心修复：重置并打印环境，用于调试 ====
+            # 重置 PATH，确保 /usr/bin 优先
+            export PATH=\"/usr/bin:/bin:/usr/sbin:/sbin\"
+            echo \"=== 环境调试信息 ===\"
+            echo \"当前PATH: \$PATH\"
+            echo \"Docker路径: \$(which docker)\"
+            echo \"Docker客户端版本: \$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo '获取失败')\"
+            echo \"Docker服务端API版本: \$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || echo '获取失败')\"
+            
+            # ==== 执行部署 ====
+            cd ${{ secrets.DEPLOY_DIR }}
+            
+            # 判断当前颜色
+            if [ -f current_color ]; then
+              CURRENT_COLOR=\$(cat current_color)
+            else
+              CURRENT_COLOR=\"blue\"
+            fi
+            
+            if [ \"\$CURRENT_COLOR\" = \"blue\" ]; then
+              NEW_COLOR=\"green\"
+            else
+              NEW_COLOR=\"blue\"
+            fi
+            
+            echo \"开始蓝绿部署，新镜像: $IMAGE_TAG, 新颜色: \$NEW_COLOR\"
+            
+            # 方法：使用纯 Docker 命令进行蓝绿部署（替代有问题的 docker-compose）
+            # 1. 拉取镜像
+            docker pull \"$IMAGE_TAG\"
+            
+            # 2. 停止并移除旧颜色的容器
+            docker stop \"web-calculator-\$NEW_COLOR\" 2>/dev/null || true
+            docker rm \"web-calculator-\$NEW_COLOR\" 2>/dev/null || true
+            
+            # 3. 启动新颜色的容器
+            # 根据颜色分配不同的内部端口，但都通过nginx代理到80端口
+            if [ \"\$NEW_COLOR\" = \"blue\" ]; then
+              INTERNAL_PORT=8080
+            else
+              INTERNAL_PORT=8081
+            fi
+            
+            docker run -d \\
+              --name \"web-calculator-\$NEW_COLOR\" \\
+              --restart unless-stopped \\
+              -p \$INTERNAL_PORT:5000 \\
+              \"$IMAGE_TAG\"
+            
+            # 4. (可选) 更新nginx配置并重启，将流量指向新颜色的容器
+            # 这里简化处理：如果nginx配置已经指向了 upstream，则只需确保容器运行。
+            # 更复杂的流量切换逻辑可以根据需要补充。
+            
+            # 5. 更新当前颜色记录
+            echo \"\$NEW_COLOR\" > current_color
+            
+            echo \"等待新容器启动...\"
+            sleep 15
+            
+            # 6. 验证新容器健康状态
+            if curl -f \"http://localhost:\$INTERNAL_PORT/health\" > /dev/null 2>&1; then
+              echo \"✅ 新颜色 (\$NEW_COLOR) 容器部署成功！\"
+            else
+              echo \"❌ 新容器健康检查失败。\"
+              echo \"查看容器日志：\"
+              docker logs \"web-calculator-\$NEW_COLOR\" --tail 20
+              exit 1
+            fi
+          "
+
+      - name: Verify deployment
+        run: |
+          echo "验证部署..."
+          MAX_RETRIES=12
+          RETRY_COUNT=0
+          
+          # 首先，通过SSH获取服务器上当前运行的颜色
+          CURRENT_COLOR=$(ssh -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_SERVER_IP }} \
+              "cat ${{ secrets.DEPLOY_DIR }}/current_color 2>/dev/null || echo 'blue'")
+          
+          # 根据颜色决定检查的端口
+          if [ "$CURRENT_COLOR" = "blue" ]; then
+            CHECK_PORT="8080"
+          else
+            CHECK_PORT="8081"
+          fi
+          
+          echo "当前颜色为 $CURRENT_COLOR，将检查端口 $CHECK_PORT ..."
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if curl -f -s http://${{ secrets.DEPLOY_SERVER_IP }}:$CHECK_PORT/health > /dev/null; then
+              echo "✅ 部署验证成功！服务健康。"
+              exit 0
+            fi
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            echo "尝试 $RETRY_COUNT/$MAX_RETRIES: 服务尚未就绪，等待5秒..."
+            sleep 5
+          done
+          
+          echo "❌ 部署验证失败：服务在多次尝试后未响应健康检查"
+          exit 1
