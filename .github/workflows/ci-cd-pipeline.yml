@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: wkk08/web-calculator-ci-cd
+  IMAGE_NAME: wzw02/webs
 
 jobs:
   unit-test:
@@ -92,7 +92,7 @@ jobs:
           echo "✅ 本地镜像构建成功"
       - name: Log in to GHCR with PAT
         run: |
-          echo "${{ secrets.GHCR_PAT }}" | docker login ${{ env.REGISTRY }} -u wkk08 --password-stdin
+          echo "${{ secrets.GHCR_PAT }}" | docker login ${{ env.REGISTRY }} -u wzw02 --password-stdin
       - name: Tag and Push to GHCR
         run: |
           docker tag web-calculator:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
