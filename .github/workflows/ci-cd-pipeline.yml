@@ -134,6 +134,10 @@ jobs:
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           
+          # 测试私钥解析
+          echo "🔑 测试私钥解析..."
+          ssh-keygen -l -f ~/.ssh/deploy_key
+          
           # 3. 将服务器主机指纹加入已知主机列表
           ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null
           
