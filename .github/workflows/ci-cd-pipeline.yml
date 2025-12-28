@@ -12,7 +12,7 @@ env:
 
 jobs:
   unit-test:
-    name: Unit Tests
+    name: Unit Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -37,7 +37,7 @@ jobs:
           path: coverage.xml
 
   functional-test:
-    name: Functional Tests
+    name: Functional Test
     runs-on: ubuntu-latest
     needs: unit-test
     steps:
@@ -72,7 +72,7 @@ jobs:
           kill $APP_PID 2>/dev/null || true
 
   build-and-push:
-    name: Build and Push Docker Image
+    name: Build and Push 
     runs-on: ubuntu-latest
     needs: [unit-test, functional-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -109,7 +109,7 @@ jobs:
           echo "IMAGE_TAG=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
   deploy:
-    name: Blue-Green Deployment
+    name: Blue-Green 
     runs-on: ubuntu-latest
     needs: build-and-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -137,7 +137,7 @@ jobs:
           # 测试私钥解析
           echo "🔑 测试私钥解析..."
           ssh-keygen -l -f ~/.ssh/deploy_key
-          
+
           # 3. 将服务器主机指纹加入已知主机列表
           ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null
           
@@ -152,7 +152,7 @@ jobs:
           echo "===================="
 
       # >>>>> 核心新增步骤：详细的SSH连接调试 <<<<<
-      - name: Debug SSH Connection (Verbose)
+      - name: Debug SSH Connection 
         run: |
           echo "🧪 开始执行详细SSH连接调试..."
           # 使用 -vvv 参数输出最详细日志，并用 tee 同时输出到屏幕和文件以便完整查看
@@ -247,7 +247,6 @@ jobs:
               -p \$INTERNAL_PORT:5000 \\
               \"$IMAGE_TAG\"
             
-            # 4. (可选) 更新nginx配置并重启，将流量指向新颜色的容器
             # 这里简化处理：如果nginx配置已经指向了 upstream，则只需确保容器运行。
             # 更复杂的流量切换逻辑可以根据需要补充。
             
