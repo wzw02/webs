@@ -124,7 +124,7 @@ jobs:
 
       - name: Setup SSH Key and Debug Connection
         env:
-          SSH_PRIVATE_KEYD : ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           # 1. 创建 .ssh 目录并设置权限
           mkdir -p ~/.ssh
@@ -133,7 +133,7 @@ jobs:
           # 2. 将私钥写入文件 (关键: 检查格式，必须包含完整的BEGIN/END行)
           
           cat > ~/.ssh/deploy_key << 'EOF' 
-          $SSH_PRIVATE_KEYD 
+          $SSH_PRIVATE_KEY
           EOF
           chmod 600 ~/.ssh/deploy_key
           
