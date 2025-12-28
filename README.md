@@ -35,7 +35,7 @@
 - **Unit test**：Use pytest for code-level testing and generate coverage reports.
 - **Functional test**：Launch the application and test the main API endpoints (health check, addition, multiplication, error handling).
 
-### 2. **镜Like building and managing**
+### 2. **Image building and management**
 
 - **GHCR integration**：Push to GitHub Container Registry
 - **Local verification**：First build a local image, then push it to the remote repository.
