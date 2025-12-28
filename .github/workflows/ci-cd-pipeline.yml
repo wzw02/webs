@@ -131,10 +131,7 @@ jobs:
           chmod 700 ~/.ssh
           
           # 2. 将私钥写入文件 (关键: 检查格式，必须包含完整的BEGIN/END行)
-          
-          cat > ~/.ssh/deploy_key << 'EOF' 
-          $SSH_PRIVATE_KEY
-          EOF
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           
           # 3. 将服务器主机指纹加入已知主机列表
